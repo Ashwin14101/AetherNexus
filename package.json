@@ -4,11 +4,13 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "node app.js",
-    "health-node": "node health-node/index.js",
-    "mcp": "node mcp_server.js",
+    "start": "npx ts-node server.ts",
+    "mcp": "node dist/mcpServer.js",
+    "gateway": "ts-node gateway.ts",
     "chaos-server": "ts-node server.ts",
-    "gateway": "ts-node gateway.ts"
+    "pre-deploy-check": "node scripts/pre-deploy-check.mjs",
+    "integration-test": "node scripts/integration-test.mjs",
+    "start:all": "concurrently \"npx ts-node server.ts\" \"npx ts-node nodes/us-east-node.ts\" \"npx ts-node nodes/eu-west-node.ts\" \"npx ts-node nodes/ap-south-node.ts\" \"npm --prefix dashboard run dev\""
   },
   "keywords": [],
   "author": "",
@@ -21,13 +23,18 @@
     "express": "^5.2.1",
     "http-proxy-middleware": "^4.0.0",
     "mongodb": "^7.2.0",
-    "node-fetch": "^2.7.0"
+    "mongoose": "^9.6.3",
+    "node-fetch": "^2.7.0",
+    "openai": "^6.41.0",
+    "socket.io": "^4.8.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
+    "@types/http-proxy-middleware": "^0.19.3",
     "@types/node": "^25.9.1",
     "@types/node-fetch": "^2.6.13",
+    "concurrently": "^9.1.2",
     "ts-node": "^10.9.2",
     "typescript": "^6.0.3"
   }

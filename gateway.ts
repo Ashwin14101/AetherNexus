@@ -11,11 +11,15 @@ const app = express();
 const PORT = process.env.GATEWAY_PORT || 3003;
 const MONGODB_URI = process.env.MONGODB_URI;
 
-// Target Node URLs from environment variables
+if (process.env.NODE_ENV === 'production' && (!process.env.US_EAST_URL || !process.env.EU_WEST_URL || !process.env.AP_SOUTH_URL)) {
+  console.error('[gateway] Fatal Error: Missing one or more required cluster URL environment variables (US_EAST_URL, EU_WEST_URL, AP_SOUTH_URL).');
+  process.exit(1);
+}
+
 const NODE_URLS = {
-  'US-East-1': process.env.NODE_US_URL || 'https://oweyr-health-node-us-east.hf.space',
-  'EU-West-1': process.env.NODE_EU_URL || 'https://oweyr-health-node-eu-west.hf.space',
-  'AP-South-1': process.env.NODE_ASIA_URL || 'https://oweyr-health-node-ap-south.hf.space',
+  'US-East-1': process.env.US_EAST_URL || 'http://localhost:3001',
+  'EU-West-1': process.env.EU_WEST_URL || 'http://localhost:3002',
+  'AP-South-1': process.env.AP_SOUTH_URL || 'http://localhost:3004',
 };
 
 interface RoutingTable {
@@ -25,10 +29,11 @@ interface RoutingTable {
 }
 
 // In-memory routing table initialized to nominal even weights
+// BUG-A09 FIX: AP-South-1 was 33.3 (total=99.9). Now 33.4 to match loadbalancer.ts default (total=100).
 let routingTable: RoutingTable = {
   'US-East-1': 33.3,
   'EU-West-1': 33.3,
-  'AP-South-1': 33.3,
+  'AP-South-1': 33.4,
 };
 
 let db: Db;
@@ -59,6 +64,19 @@ async function connectDb() {
         routingTable = stateDoc.traffic_distribution_map;
         console.log('[gateway] Initialized routing table from database:', routingTable);
       }
+
+      // Refresh routing table periodically
+      setInterval(async () => {
+        try {
+          const stateDoc = await db.collection<any>('load_balancer_state').findOne({ _id: 'current_state' });
+          if (stateDoc && stateDoc.traffic_distribution_map) {
+            routingTable = stateDoc.traffic_distribution_map;
+          }
+        } catch (err: any) {
+          console.error('[gateway] Failed to refresh routing table:', err.message);
+        }
+      }, 5000);
+
     } catch (err: any) {
       console.warn('[gateway] Database sync failed. Using default in-memory weights:', err.message);
     }
@@ -91,74 +109,11 @@ function selectTargetRegion(): keyof RoutingTable {
 
 app.use(cors());
 
-// Parse JSON specifically for the rebalance endpoint
-app.post('/api/admin/rebalance', express.json(), async (req: Request, res: Response) => {
-  const rawMap = req.body.traffic_distribution_map || req.body;
-
-  if (!rawMap || typeof rawMap !== 'object') {
-    return res.status(400).json({ error: 'Invalid or missing traffic distribution map payload' });
-  }
-
-  // Parse and normalize the incoming distribution percentages
-  const newWeights: Partial<RoutingTable> = {};
-  for (const rawKey of Object.keys(rawMap)) {
-    const normalizedKey = normalizeRoutingKey(rawKey);
-    if (normalizedKey) {
-      newWeights[normalizedKey] = parseFloat(rawMap[rawKey]);
-    }
-  }
-
-  // Verify we received all three weights
-  if (
-    typeof newWeights['US-East-1'] !== 'number' ||
-    typeof newWeights['EU-West-1'] !== 'number' ||
-    typeof newWeights['AP-South-1'] !== 'number'
-  ) {
-    return res.status(400).json({
-      error: 'Incomplete routing map. US-East-1, EU-West-1, and AP-South-1 weights must be provided.',
-      received: newWeights,
-    });
-  }
-
-  // Update in-memory weights
-  routingTable = {
-    'US-East-1': newWeights['US-East-1'],
-    'EU-West-1': newWeights['EU-West-1'],
-    'AP-South-1': newWeights['AP-South-1'],
-  };
-
-  console.log('[gateway] Routing table updated by admin rebalance command:', routingTable);
-
-  // Sync to database if available
-  if (mongoConnected) {
-    try {
-      await db.collection<any>('load_balancer_state').updateOne(
-        { _id: 'current_state' },
-        {
-          $set: {
-            traffic_distribution_map: routingTable,
-            updatedAt: new Date(),
-          },
-        },
-        { upsert: true }
-      );
-      console.log('[gateway] Persisted updated routing table to database.');
-    } catch (err: any) {
-      console.error('[gateway] Failed to persist routing table to DB:', err.message);
-    }
-  }
-
-  return res.json({
-    success: true,
-    message: 'Routing weights successfully updated.',
-    traffic_distribution_map: routingTable,
-  });
-});
 
 // ── http-proxy-middleware Gateway Setup ─────────────────────────────────────
 
 const proxyMiddleware = createProxyMiddleware({
-  target: 'https://oweyr-health-node-eu-west.hf.space', // Default fallback target
+  target: NODE_URLS['EU-West-1'] || 'http://localhost:3002', // Default fallback target
   router: (req) => {
     const targetRegion = selectTargetRegion();
     const targetUrl = NODE_URLS[targetRegion];

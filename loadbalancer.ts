@@ -15,12 +15,14 @@ export interface LoadBalancerState {
 /**
  * Normalizes user-facing/telemetry region names to a standard key format.
  */
-export function normalizeRegion(region: string): string {
+export function normalizeRegion(region: string): string | null {
   const r = region.trim().toUpperCase();
-  if (r === 'US-EAST' || r === 'US-EAST-1') return 'US-East';
-  if (r === 'EU-WEST' || r === 'EU-WEST-1') return 'EU-West';
-  if (r === 'AP-SOUTH' || r === 'AP-SOUTH-1') return 'AP-South';
-  return region;
+  if (r === 'US-EAST' || r === 'US-EAST-1' || r === 'USEASTCLUSTER') return 'US-East';
+  if (r === 'EU-WEST' || r === 'EU-WEST-1' || r === 'EUWESTCLUSTER') return 'EU-West';
+  if (r === 'AP-SOUTH' || r === 'AP-SOUTH-1' || r === 'APSOUTHCLUSTER') return 'AP-South';
+  // BUG-A05 FIX: Return null for unrecognized input instead of throwing.
+  // Callers must null-check. Never let this function crash the process.
+  return null;
 }
 
 /**
@@ -40,12 +42,13 @@ export async function recalculateRouting(db: Db): Promise<TrafficDistributionMap
 
   // Query latest status for all three regions
   for (const r of regions) {
-    const latest = await db.collection<any>('server_health')
-      .findOne({ region: r }, { sort: { timestamp: -1 } });
+    const clusterId = r === 'US-East' ? 'usEastCluster' : r === 'EU-West' ? 'euWestCluster' : 'apSouthCluster';
+    const latest = await db.collection<any>('node_states')
+      .findOne({ nodeId: clusterId });
 
     if (latest) {
-      const status = latest.clusterOperationalStatus;
-      if (status === 'CRITICAL_NETWORK_DOWN' || latest.networkPackets === 0) {
+      const status = latest.status;
+      if (status === 'CRITICAL_NETWORK_DOWN' || status === 'CRITICAL' || latest.currentLoadPercentage >= 90 || latest.metrics?.activeConnections === 0) {
         statusMap[r] = false;
       }
     }
@@ -53,40 +56,34 @@ export async function recalculateRouting(db: Db): Promise<TrafficDistributionMap
 
   // Calculate active regions list
   const activeRegions = Object.keys(statusMap).filter(r => statusMap[r]);
-  let distributionMap: TrafficDistributionMap;
+  const regionKeys: Record<string, keyof TrafficDistributionMap> = {
+    'US-East': 'US-East-1',
+    'EU-West': 'EU-West-1',
+    'AP-South': 'AP-South-1',
+  };
 
-  if (activeRegions.length === 3) {
-    // Normal operation: divided evenly among all three regions
-    distributionMap = {
-      'US-East-1': 33.3,
-      'EU-West-1': 33.3,
-      'AP-South-1': 33.3,
-    };
-    console.log('[loadbalancer] All regions healthy. Even split: 33.3% each.');
-  } else if (activeRegions.length === 2) {
-    // One region is down: redistribute traffic weight equally between the other two (50% each)
-    distributionMap = {
-      'US-East-1': statusMap['US-East'] ? 50 : 0,
-      'EU-West-1': statusMap['EU-West'] ? 50 : 0,
-      'AP-South-1': statusMap['AP-South'] ? 50 : 0,
-    };
-    console.log(`[loadbalancer] Failover: One region down. Active: ${activeRegions.join(', ')}. Split: 50% / 50%.`);
-  } else if (activeRegions.length === 1) {
-    // Two regions are down: route 100% of traffic to the single remaining healthy region
-    distributionMap = {
-      'US-East-1': statusMap['US-East'] ? 100 : 0,
-      'EU-West-1': statusMap['EU-West'] ? 100 : 0,
-      'AP-South-1': statusMap['AP-South'] ? 100 : 0,
-    };
-    console.log(`[loadbalancer] Critical Failover: Two regions down. Active: ${activeRegions[0]}. Routing 100% to active region.`);
+  let distributionMap: TrafficDistributionMap = {
+    'US-East-1': 0,
+    'EU-West-1': 0,
+    'AP-South-1': 0,
+  };
+
+  if (activeRegions.length === 0) {
+    // All regions down — routing disabled
+    console.log('[loadbalancer] Emergency: All regions down. Routing disabled (0%).');
   } else {
-    // All regions are down: fallback to default split to attempt recovery routing
-    distributionMap = {
-      'US-East-1': 33.3,
-      'EU-West-1': 33.3,
-      'AP-South-1': 33.3,
-    };
-    console.log('[loadbalancer] Emergency: All regions down. Fallback to even split.');
+    // Integer-division algorithm: guarantees sum = exactly 100 with no floating-point drift
+    const healthyCount = activeRegions.length;
+    const baseLoad = Math.floor(100 / healthyCount);
+    let remainder = 100 % healthyCount;
+
+    for (const r of activeRegions) {
+      const distKey = regionKeys[r];
+      distributionMap[distKey] = baseLoad + (remainder > 0 ? 1 : 0);
+      if (remainder > 0) remainder--;
+    }
+
+    console.log(`[loadbalancer] Active regions: ${activeRegions.join(', ')}. Distribution:`, distributionMap);
   }
 
   // Save the state directly to database, changing tracking variable called traffic_distribution_map
@@ -116,6 +113,6 @@ export async function getDistributionMap(db: Db): Promise<TrafficDistributionMap
   return {
     'US-East-1': 33.3,
     'EU-West-1': 33.3,
-    'AP-South-1': 33.3,
+    'AP-South-1': 33.4,
   };
 }

@@ -2,3 +2,14 @@ node_modules/
 .env
 venv/
 __pycache__/
+.agent/
+.agents/
+
+# Context, Report, and Workflow files
+*CONTEXT*.md
+*WORK_LOGIC*.md
+*WORKFLOW*.md
+*REPORT*.md
+WORK_ASSIGNMENT.md
+context.md
+work_logic.md

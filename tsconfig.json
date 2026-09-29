@@ -7,7 +7,12 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "outDir": "./dist"
+    "outDir": "./dist",
+    "resolveJsonModule": true,
+    "noUncheckedIndexedAccess": false,
+    "allowJs": false,
+    "declaration": true,
+    "paths": {}
   },
-  "include": ["loadbalancer.ts", "server.ts"]
+  "include": ["loadbalancer.ts", "server.ts", "gateway.ts", "nodes/*.ts"]
 }
