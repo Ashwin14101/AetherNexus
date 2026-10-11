@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 const GATEWAY_URL = import.meta.env.VITE_API_GATEWAY_URL || 'http://localhost:4000';
 
@@ -14,48 +14,92 @@ const cascadeScenarios = [
   { label: 'Rolling Degradation', scenario: 'rolling-degradation' },
 ];
 
-export default function DevOpsControls({ onMitigate }) {
+export default function DevOpsControls({ onMitigate, onReset }) {
+  // Track active actions for visual feedback
+  const [activeActions, setActiveActions] = useState({});
+
+  const setActionActive = (key, isActive) => {
+    setActiveActions(prev => ({ ...prev, [key]: isActive }));
+    if (isActive) {
+      // Auto-clear the active state after 3 seconds
+      setTimeout(() => setActiveActions(prev => ({ ...prev, [key]: false })), 3000);
+    }
+  };
+
   const handleInject = async (region, faultType) => {
-    // BUG-A10 FIX: Use dedicated endpoint for each fault type with correct faultType strings.
-    // '/api/chaos/spike-cpu' and '/api/chaos/kill-network' are the correct endpoints.
-    // The faultType string 'NETWORK_DROP' is NOT 'NETWORK_DROPOUT' — use the dedicated endpoint.
+    const actionKey = `${region}-${faultType}`;
+    setActionActive(actionKey, true);
     try {
       if (faultType === 'CPU_SPIKE') {
-        await fetch(`${GATEWAY_URL}/api/chaos/spike-cpu`, {
+        const res = await fetch(`${GATEWAY_URL}/api/chaos/spike-cpu`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ region })
         });
+        const data = await res.json();
+        console.log(`[Chaos] CPU Spike injected:`, data);
       } else if (faultType === 'NETWORK_KILL') {
-        await fetch(`${GATEWAY_URL}/api/chaos/kill-network`, {
+        const res = await fetch(`${GATEWAY_URL}/api/chaos/kill-network`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ region })
         });
+        const data = await res.json();
+        console.log(`[Chaos] Network killed:`, data);
       }
     } catch (e) {
-      console.error('Chaos injection failed', e);
+      console.error('Chaos injection failed:', e);
+      setActionActive(actionKey, false);
     }
   };
 
   const handleCascade = async (scenario) => {
+    const actionKey = `cascade-${scenario}`;
+    setActionActive(actionKey, true);
     try {
-      await fetch(`${GATEWAY_URL}/api/chaos/cascade`, {
+      const res = await fetch(`${GATEWAY_URL}/api/chaos/cascade`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ scenario })
       });
+      const data = await res.json();
+      console.log(`[Chaos] Cascade scenario "${scenario}" started:`, data);
     } catch (e) {
-      console.error('Cascade scenario failed', e);
+      console.error('Cascade scenario failed:', e);
+      setActionActive(actionKey, false);
     }
   };
 
   const handleReset = async () => {
+    setActionActive('reset', true);
+    if (onReset) onReset();
     try {
-      await fetch(`${GATEWAY_URL}/api/chaos/reset`, { method: 'POST' });
+      const res = await fetch(`${GATEWAY_URL}/api/chaos/reset`, { method: 'POST' });
+      const data = await res.json();
+      console.log(`[Chaos] Reset:`, data);
     } catch (e) {
-      console.error('Reset failed', e);
+      console.error('Reset failed:', e);
     }
+  };
+
+  const getBtnStyle = (glowColor, actionKey) => {
+    const isActive = activeActions[actionKey];
+    return {
+      background: isActive ? `${glowColor}25` : 'transparent',
+      color: isActive ? glowColor : '#fff',
+      border: `1px solid ${glowColor}`,
+      padding: '8px 12px',
+      borderRadius: '4px',
+      fontFamily: 'monospace',
+      fontSize: '12px',
+      cursor: 'pointer',
+      transition: 'all 0.2s ease',
+      boxShadow: isActive ? `0 0 15px ${glowColor}60` : `0 0 5px ${glowColor}40`,
+      textTransform: 'uppercase',
+      letterSpacing: '0.05em',
+      whiteSpace: 'nowrap',
+      transform: isActive ? 'scale(0.97)' : 'scale(1)',
+    };
   };
 
   return (
@@ -92,13 +136,22 @@ export default function DevOpsControls({ onMitigate }) {
             }}>
               {cluster.label}
             </h3>
-            <button onClick={() => handleInject(cluster.region, 'CPU_SPIKE')} style={btnStyle('#ff003c')}>
-              Inject CPU Spike
+            <button
+              onClick={() => handleInject(cluster.region, 'CPU_SPIKE')}
+              style={getBtnStyle('#ff003c', `${cluster.region}-CPU_SPIKE`)}
+            >
+              {activeActions[`${cluster.region}-CPU_SPIKE`] ? '⚡ Injecting...' : 'Inject CPU Spike'}
             </button>
-            <button onClick={() => handleInject(cluster.region, 'NETWORK_KILL')} style={btnStyle('#ffb000')}>
-              Kill Network
+            <button
+              onClick={() => handleInject(cluster.region, 'NETWORK_KILL')}
+              style={getBtnStyle('#ffb000', `${cluster.region}-NETWORK_KILL`)}
+            >
+              {activeActions[`${cluster.region}-NETWORK_KILL`] ? '🔌 Killing...' : 'Kill Network'}
             </button>
-            <button onClick={() => onMitigate && onMitigate(cluster.id)} style={btnStyle('#00ff41')}>
+            <button
+              onClick={() => onMitigate && onMitigate(cluster.id)}
+              style={getBtnStyle('#00ff41', `mitigate-${cluster.id}`)}
+            >
               Force Mitigation
             </button>
           </div>
@@ -109,30 +162,21 @@ export default function DevOpsControls({ onMitigate }) {
       <div style={{ display: 'flex', gap: '10px', justifyContent: 'center', borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '12px', flexWrap: 'wrap' }}>
         <span style={{ color: '#888', fontSize: '11px', fontFamily: 'monospace', alignSelf: 'center' }}>SCENARIOS:</span>
         {cascadeScenarios.map(s => (
-          <button key={s.scenario} onClick={() => handleCascade(s.scenario)} style={btnStyle('#7b2fff')}>
-            🌊 {s.label}
+          <button
+            key={s.scenario}
+            onClick={() => handleCascade(s.scenario)}
+            style={getBtnStyle('#7b2fff', `cascade-${s.scenario}`)}
+          >
+            {activeActions[`cascade-${s.scenario}`] ? '🌊 Running...' : `🌊 ${s.label}`}
           </button>
         ))}
-        <button onClick={handleReset} style={btnStyle('#00e5ff')}>
-          ↺ Reset All
+        <button
+          onClick={handleReset}
+          style={getBtnStyle('#00e5ff', 'reset')}
+        >
+          {activeActions['reset'] ? '↺ Resetting...' : '↺ Reset All'}
         </button>
       </div>
     </div>
   );
 }
-
-const btnStyle = (glowColor) => ({
-  background: 'transparent',
-  color: '#fff',
-  border: `1px solid ${glowColor}`,
-  padding: '8px 12px',
-  borderRadius: '4px',
-  fontFamily: 'monospace',
-  fontSize: '12px',
-  cursor: 'pointer',
-  transition: 'all 0.2s ease',
-  boxShadow: `0 0 5px ${glowColor}40`,
-  textTransform: 'uppercase',
-  letterSpacing: '0.05em',
-  whiteSpace: 'nowrap',
-});

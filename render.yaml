@@ -6,7 +6,7 @@ services:
     env: node
     region: oregon
     plan: free
-    buildCommand: npm install
+    buildCommand: npm install && npm --prefix dashboard install && npm --prefix dashboard run build
     startCommand: npx ts-node server.ts
     envVars:
       - key: MONGODB_URI

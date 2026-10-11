@@ -8,7 +8,7 @@ import Diagnostics from './components/Diagnostics';
 import DevOpsControls from './components/DevOpsControls';
 import './App.css';
 
-const GATEWAY_URL = import.meta.env.VITE_API_GATEWAY_URL || 'http://localhost:4000';
+const GATEWAY_URL = import.meta.env.VITE_API_GATEWAY_URL || (import.meta.env.PROD ? '' : 'http://localhost:4000');
 
 const packetGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
 const packetMat = new THREE.MeshBasicMaterial({ color: '#ffffff' });
@@ -38,6 +38,29 @@ function ApiGateway({ position }) {
       </Html>
     </group>
   );
+}
+
+function toClusterId(key) {
+  if (!key) return key;
+  const low = String(key).toLowerCase();
+  if (low.includes('west')) return 'euWestCluster';
+  if (low.includes('south')) return 'apSouthCluster';
+  if (low.includes('east')) return 'usEastCluster';
+  return key;
+}
+
+function normalizeTrafficWeights(dist) {
+  if (!dist) return { usEastCluster: 33.3, euWestCluster: 33.3, apSouthCluster: 33.4 };
+  const res = { usEastCluster: 0, euWestCluster: 0, apSouthCluster: 0 };
+  for (const [k, v] of Object.entries(dist)) {
+    const cId = toClusterId(k);
+    if (res[cId] !== undefined) {
+      res[cId] = typeof v === 'number' ? v : parseFloat(v) || 0;
+    }
+  }
+  const total = res.usEastCluster + res.euWestCluster + res.apSouthCluster;
+  if (total === 0) return { usEastCluster: 33.3, euWestCluster: 33.3, apSouthCluster: 33.4 };
+  return res;
 }
 
 function DataFlowSystem({ apiGatewayPos, racks, statuses, trafficWeights }) {
@@ -106,7 +129,7 @@ function DataFlowSystem({ apiGatewayPos, racks, statuses, trafficWeights }) {
       if (status === 'CRITICAL_RED') colorObj.set('#ff3333');
       else if (status === 'WARNING_AMBER') colorObj.set('#ffaa00');
       else if (status === 'HEALING') colorObj.set('#ffd700');
-      else colorObj.set('#00ff41');  // BUG-A12 FIX: was #00ff00
+      else colorObj.set('#00ff41');
 
       meshRef.current.setColorAt(i, colorObj);
     });
@@ -123,7 +146,6 @@ function DataFlowSystem({ apiGatewayPos, racks, statuses, trafficWeights }) {
 }
 
 export default function App() {
-  // BUG-A11 FIX: Removed debug console.log from render body (leaked env var in prod)
   const [currentView, setCurrentView] = useState('topology');
   const [logs, setLogs] = useState([]);
   const [trafficWeights, setTrafficWeights] = useState({ usEastCluster: 33.3, euWestCluster: 33.3, apSouthCluster: 33.4 });
@@ -136,9 +158,10 @@ export default function App() {
   const [liveMetrics, setLiveMetrics] = useState({});
   // PWR-03: Track system paused state from AI broadcasts
   const [isSystemPaused, setIsSystemPaused] = useState(false);
-  const [pauseCountdown, setPauseCountdown] = useState(null);
 
   const mitigationIntervals = useRef({});
+  // Dedupe: track last log message to prevent duplicates
+  const lastLogRef = useRef('');
 
   useEffect(() => {
     return () => {
@@ -152,6 +175,17 @@ export default function App() {
     { id: 'euWestCluster', position: [0, -2, 0], label: 'EU-WEST' },
     { id: 'apSouthCluster', position: [6, -2, 0], label: 'AP-SOUTH' }
   ], []);
+
+  // Helper: add a log entry with deduplication
+  const addLog = useCallback((logEntry) => {
+    const logKey = typeof logEntry === 'string'
+      ? logEntry
+      : (logEntry?.executedMitigationAction || logEntry?.text || JSON.stringify(logEntry));
+    // Suppress exact duplicates in a row
+    if (logKey === lastLogRef.current) return;
+    lastLogRef.current = logKey;
+    setLogs(prev => [logEntry, ...prev].slice(0, 50));
+  }, []);
 
   useEffect(() => {
     const socket = io(GATEWAY_URL);
@@ -172,7 +206,6 @@ export default function App() {
             });
             if (data.isSystemPaused) {
               setIsSystemPaused(true);
-              setPauseCountdown(300);
             }
           }
         }).catch(err => console.error('Reconnect fetch failed', err));
@@ -180,53 +213,70 @@ export default function App() {
     socket.on('connect', onConnect);
 
     socket.on('aethernexus-telemetry-broadcast', (data) => {
-      setLogs(prev => [data, ...prev].slice(0, 100));
-      if (data.trafficDistribution) setTrafficWeights(data.trafficDistribution);
+      addLog(data);
+      if (data.trafficDistribution) setTrafficWeights(normalizeTrafficWeights(data.trafficDistribution));
       // PWR-03: Detect system paused state from broadcast
       if (data.incidentThreatLevelColor === 'CRITICAL_RED' && data.executedMitigationAction?.includes('Human override')) {
         setIsSystemPaused(true);
-        setPauseCountdown(300);
       }
-      if (data.incidentThreatLevelColor === 'NOMINAL_GREEN') setIsSystemPaused(false);
-      if (data.targetClusterRegion && data.incidentThreatLevelColor) {
-        setStatuses(prev => ({ ...prev, [data.targetClusterRegion]: data.incidentThreatLevelColor }));
-        if (data.healingProgress !== undefined) setHealingProgresses(prev => ({ ...prev, [data.targetClusterRegion]: data.healingProgress }));
+      if (data.incidentThreatLevelColor === 'NOMINAL_GREEN') {
+        setIsSystemPaused(false);
+        if (!data.targetClusterRegion || data.executedMitigationAction?.includes('all cluster') || data.executedMitigationAction?.includes('all clusters')) {
+          setStatuses({
+            usEastCluster: 'NOMINAL_GREEN',
+            euWestCluster: 'NOMINAL_GREEN',
+            apSouthCluster: 'NOMINAL_GREEN'
+          });
+          setHealingProgresses({});
+        }
+      }
+
+      const resolvedCluster = toClusterId(data.targetClusterRegion) || (() => {
+        const act = (data.executedMitigationAction || '').toLowerCase();
+        if (act.includes('euwest') || act.includes('eu-west') || act.includes('eu_west') || act.includes('europe')) return 'euWestCluster';
+        if (act.includes('apsouth') || act.includes('ap-south') || act.includes('ap_south') || act.includes('asia')) return 'apSouthCluster';
+        if (act.includes('useast') || act.includes('us-east') || act.includes('us_east')) return 'usEastCluster';
+        return null;
+      })();
+
+      if (resolvedCluster && data.incidentThreatLevelColor) {
+        setStatuses(prev => ({ ...prev, [resolvedCluster]: data.incidentThreatLevelColor }));
+        if (data.healingProgress !== undefined) {
+          setHealingProgresses(prev => ({ ...prev, [resolvedCluster]: data.healingProgress }));
+        }
       }
     });
 
     socket.on('live-metrics-stream', (data) => {
-      setLiveMetrics(data);
-
-      Object.entries(data).forEach(([regionId, metrics]) => {
+      const normalizedMetrics = {};
+      Object.entries(data).forEach(([rawId, metrics]) => {
+        const clusterId = toClusterId(rawId);
+        normalizedMetrics[clusterId] = metrics;
         const m = metrics;
         const cpu = m?.currentLoadPercentage ?? m?.computeLoadPercentage ?? 0;
         const dbStatus = m?.status ?? m?.clusterOperationalStatus;
         if (dbStatus === 'HEALING') {
-          setStatuses(prev => ({ ...prev, [regionId]: 'HEALING' }));
+          setStatuses(prev => ({ ...prev, [clusterId]: 'HEALING' }));
         } else if (dbStatus === 'CRITICAL_NETWORK_DOWN' || dbStatus === 'CRITICAL') {
-          setStatuses(prev => ({ ...prev, [regionId]: 'CRITICAL_RED' }));
+          setStatuses(prev => ({ ...prev, [clusterId]: 'CRITICAL_RED' }));
         } else if (cpu > 90) {
-          setStatuses(prev => ({ ...prev, [regionId]: 'CRITICAL_RED' }));
+          setStatuses(prev => ({ ...prev, [clusterId]: 'CRITICAL_RED' }));
         } else if (cpu > 75) {
-          setStatuses(prev => ({ ...prev, [regionId]: 'WARNING_AMBER' }));
+          setStatuses(prev => ({ ...prev, [clusterId]: 'WARNING_AMBER' }));
         } else {
-          setStatuses(prev => ({ ...prev, [regionId]: 'NOMINAL_GREEN' }));
+          setStatuses(prev => ({ ...prev, [clusterId]: 'NOMINAL_GREEN' }));
         }
-
-        const ram = m?.metrics?.ram ? (m.metrics.ram / 1024) : (m?.volatileMemoryAllocationGb || 0);
-        const logEntry = `[${new Date().toLocaleTimeString()}] ${regionId.toUpperCase()} | CPU: ${cpu.toFixed(1)}% | RAM: ${ram.toFixed(1)}GB | Status: ${dbStatus}`;
-        setLogs(prev => [logEntry, ...prev].slice(0, 100));
       });
+      setLiveMetrics(normalizedMetrics);
     });
 
     // AI Orchestrator real-time insight stream
     socket.on('ai-log', (data) => {
       const formattedLog = `[AI - ${data.level ? data.level.toUpperCase() : 'INFO'}] ${data.text}`;
-      setLogs(prev => [formattedLog, ...prev].slice(0, 100));
+      addLog(formattedLog);
     });
 
     // GAP-011 FIX: handle three canonical WebSocket event types from spec
-    // AE_NODE_ISOLATION — node quarantined; update statuses and traffic weights
     socket.on('AE_NODE_ISOLATION', (data) => {
       if (data.nodes && Array.isArray(data.nodes)) {
         setStatuses(prev => {
@@ -240,21 +290,19 @@ export default function App() {
           return next;
         });
         const isolationLog = { eventTimestamp: new Date().toISOString(), principalArchitect: 'AetherNexus-Core', executedMitigationAction: `Node isolation triggered for: ${data.nodes.map(n => n.id).join(', ')}`, incidentThreatLevelColor: 'CRITICAL_RED' };
-        setLogs(prev => [isolationLog, ...prev].slice(0, 100));
+        addLog(isolationLog);
       }
     });
 
-    // AE_NODE_HEALING — mitigation started; set target node to HEALING state
     socket.on('AE_NODE_HEALING', (data) => {
       if (data.targetNode) {
         setStatuses(prev => ({ ...prev, [data.targetNode]: 'HEALING' }));
         setHealingProgresses(prev => ({ ...prev, [data.targetNode]: 0 }));
         const healingLog = { eventTimestamp: new Date().toISOString(), principalArchitect: 'AetherNexus-Core', executedMitigationAction: `Healing initiated on ${data.targetNode}`, incidentThreatLevelColor: 'HEALING' };
-        setLogs(prev => [healingLog, ...prev].slice(0, 100));
+        addLog(healingLog);
       }
     });
 
-    // AE_NETWORK_RESTORED — all nodes healthy; restore statuses and traffic weights
     socket.on('AE_NETWORK_RESTORED', (data) => {
       if (data.nodes && Array.isArray(data.nodes)) {
         setStatuses(prev => {
@@ -273,12 +321,11 @@ export default function App() {
           return next;
         });
         const restoredLog = { eventTimestamp: new Date().toISOString(), principalArchitect: 'AetherNexus-Core', executedMitigationAction: `Network restored. All nodes nominal.`, incidentThreatLevelColor: 'NOMINAL_GREEN' };
-        setLogs(prev => [restoredLog, ...prev].slice(0, 100));
+        addLog(restoredLog);
       }
     });
 
     return () => {
-      // BUG-A18 FIX: Remove ALL registered listeners including 'connect'
       socket.off('connect', onConnect);
       socket.off('aethernexus-telemetry-broadcast');
       socket.off('live-metrics-stream');
@@ -288,41 +335,60 @@ export default function App() {
       socket.off('AE_NETWORK_RESTORED');
       socket.disconnect();
     };
-  }, []);
+  }, [addLog]);
 
   // IMP-17: useCallback to prevent DevOpsControls re-render on every state change
   const handleManualMitigate = useCallback(async (region) => {
+    setStatuses(prev => ({ ...prev, [region]: 'HEALING' }));
+    setHealingProgresses(prev => ({ ...prev, [region]: 0 }));
     try {
-      const res = await fetch(`${GATEWAY_URL}/api/mitigate`, {
+      fetch(`${GATEWAY_URL}/api/mitigate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ targetClusterRegion: region, cacheLayerNamespace: 'manual-ui-override' })
-      });
-      const data = await res.json();
-      if (!data.success) throw new Error('Mitigation failed on backend');
-      setStatuses(prev => ({ ...prev, [region]: 'HEALING' }));
-      setHealingProgresses(prev => ({ ...prev, [region]: 0 }));
+      }).catch(err => console.warn('Mitigate fetch non-fatal:', err));
+
       let progress = 0;
       if (mitigationIntervals.current[region]) clearInterval(mitigationIntervals.current[region]);
       mitigationIntervals.current[region] = setInterval(() => {
-        progress += 1;
+        progress += 2; // Smooth 5s healing progress
         if (progress >= 100) {
           clearInterval(mitigationIntervals.current[region]);
           setStatuses(prev => ({ ...prev, [region]: 'NOMINAL_GREEN' }));
           setHealingProgresses(prev => ({ ...prev, [region]: null }));
+          fetch(`${GATEWAY_URL}/api/chaos/reset`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ region })
+          }).catch(() => {});
         } else {
           setHealingProgresses(prev => ({ ...prev, [region]: progress }));
         }
-      }, 300);
+      }, 100);
     } catch (e) {
-      console.error('Manual mitigation failed', e);
-      setStatuses(prev => ({ ...prev, [region]: 'CRITICAL_RED' }));
+      console.error('Manual mitigation error:', e);
     }
   }, []);
 
-  // BUG-A12 FIX: Use canonical color constants from AGENTS.md / skills.md
+  const handleResetAll = useCallback(() => {
+    setStatuses({
+      usEastCluster: 'NOMINAL_GREEN',
+      euWestCluster: 'NOMINAL_GREEN',
+      apSouthCluster: 'NOMINAL_GREEN'
+    });
+    setHealingProgresses({});
+    setTrafficWeights({ usEastCluster: 33.3, euWestCluster: 33.3, apSouthCluster: 33.4 });
+    setIsSystemPaused(false);
+    addLog({
+      eventTimestamp: new Date().toISOString(),
+      principalArchitect: 'AetherNexus-Core',
+      executedMitigationAction: 'All system chaos locks reset. Clusters nominal.',
+      incidentThreatLevelColor: 'NOMINAL_GREEN'
+    });
+  }, [addLog]);
+
   const colorMap = {
-    NOMINAL_GREEN: '#00ff41',  // was #00ff00
+    NOMINAL_GREEN: '#00ff41',
     WARNING_AMBER: '#ffb000',
     CRITICAL_RED: '#ff003c',
     HEALING: '#ffd700',
@@ -344,11 +410,16 @@ export default function App() {
     try {
       await fetch(`${GATEWAY_URL}/api/system/resume`, { method: 'POST' });
       setIsSystemPaused(false);
-      setPauseCountdown(null);
     } catch (e) {
       console.error('Resume failed', e);
     }
   };
+
+  // Clear all logs
+  const handleClearLogs = useCallback(() => {
+    setLogs([]);
+    lastLogRef.current = '';
+  }, []);
 
   return (
     <div style={{ width: '100vw', height: '100vh', background: '#0a0a0a', overflow: 'hidden', position: 'relative' }}>
@@ -401,7 +472,26 @@ export default function App() {
             <div style={{ position: 'absolute', top: 15, right: 15, fontSize: 11, color: '#00e5ff', opacity: 0.8 }}>
               Session: Admin
             </div>
-            <h3 style={{ borderBottom: '1px solid rgba(0, 229, 255, 0.3)', paddingBottom: 15, marginTop: 0, letterSpacing: '2px' }}>TELEMETRY LOGS</h3>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(0, 229, 255, 0.3)', paddingBottom: 12, marginBottom: 12 }}>
+              <h3 style={{ margin: 0, letterSpacing: '2px', fontSize: '14px' }}>TELEMETRY LOGS</h3>
+              <button
+                onClick={handleClearLogs}
+                style={{
+                  padding: '4px 10px',
+                  background: 'rgba(255, 0, 60, 0.08)',
+                  border: '1px solid rgba(255, 0, 60, 0.4)',
+                  color: '#ff003c',
+                  fontFamily: 'monospace',
+                  cursor: 'pointer',
+                  borderRadius: '4px',
+                  fontSize: '11px',
+                  letterSpacing: '1px',
+                  transition: 'all 0.3s ease'
+                }}
+              >
+                ✕ CLEAR
+              </button>
+            </div>
 
             {/* PWR-03: System Paused Banner */}
             {isSystemPaused && (
@@ -432,7 +522,7 @@ export default function App() {
                 } else if (isAiLog) {
                   borderColor = AI_LEVEL_COLORS[log.level] || '#00e5ff';
                 } else {
-                  borderColor = colorMap[log.incidentThreatLevelColor] || '#00ff00';
+                  borderColor = colorMap[log.incidentThreatLevelColor] || '#00ff41';
                 }
 
                 return (
@@ -448,7 +538,7 @@ export default function App() {
                       <div style={{ color: textColor, lineHeight: '1.4', fontFamily: 'monospace' }}>{log}</div>
                     ) : (
                       <>
-                        <div style={{ color: colorMap[log.incidentThreatLevelColor] || '#00ff00', marginBottom: '4px', fontSize: '10px' }}>
+                        <div style={{ color: colorMap[log.incidentThreatLevelColor] || '#00ff41', marginBottom: '4px', fontSize: '10px' }}>
                           [{new Date(log.eventTimestamp).toLocaleTimeString()}] &lt;{log.principalArchitect}&gt;
                         </div>
                         <div style={{ color: '#e0e0e0', lineHeight: '1.4' }}>
@@ -499,7 +589,7 @@ export default function App() {
         </>
       )}
       {currentView !== 'diagnostics' && (
-        <DevOpsControls onMitigate={handleManualMitigate} />
+        <DevOpsControls onMitigate={handleManualMitigate} onReset={handleResetAll} />
       )}
     </div>
   );

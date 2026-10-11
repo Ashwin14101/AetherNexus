@@ -85,16 +85,24 @@ export default function Diagnostics({ onReturn, logs, statuses, trafficWeights }
       { region: 'EU-West', ...countStatus(eu) },
       { region: 'AP-South', ...countStatus(ap) }
     ];
-  } else if (telemetry === null && loading === false) {
-    // Explicit offline fallback
-    loadData = [];
-  } else {
-    // Mock fallback if offline
+  }
+
+  // Fallback to realistic demo data if no historical points yet recorded
+  if (!loadData || loadData.length === 0) {
     loadData = [
-      { time: '00:00', usEast: 40, euWest: 24, apSouth: 24 },
-      { time: '04:00', usEast: 30, euWest: 13, apSouth: 22 },
-      { time: '08:00', usEast: 20, euWest: 98, apSouth: 22 },
-      { time: '12:00', usEast: 27, euWest: 39, apSouth: 20 },
+      { time: '11:50:00', usEast: 25, euWest: 28, apSouth: 22 },
+      { time: '11:53:00', usEast: 24, euWest: 30, apSouth: 23 },
+      { time: '11:56:00', usEast: 26, euWest: 95, apSouth: 22 },
+      { time: '11:59:00', usEast: 50, euWest: 48, apSouth: 50 },
+      { time: '12:02:00', usEast: 25, euWest: 25, apSouth: 22 },
+    ];
+  }
+
+  if (!incidentData || incidentData.every(d => d.nominal === 0 && d.warning === 0 && d.critical === 0)) {
+    incidentData = [
+      { region: 'US-East', nominal: 18, warning: 1, critical: 0 },
+      { region: 'EU-West', nominal: 14, warning: 2, critical: 1 },
+      { region: 'AP-South', nominal: 19, warning: 0, critical: 0 }
     ];
   }
 

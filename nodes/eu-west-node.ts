@@ -23,19 +23,23 @@ let memoryBloatArray: any[] = [];
 let cpuInterval: NodeJS.Timeout | null = null;
 let faults = { cpu: false, memory: false, network: false };
 
+let dbLogged = false;
 async function connectDb() {
   if (!MONGODB_URI) {
-    console.error(`[${REGION_ID}] No MONGODB_URI found.`);
-    process.exit(1);
+    if (!dbLogged) { console.warn(`[${REGION_ID}] No MONGODB_URI found. Running in standalone mode.`); dbLogged = true; }
+    return;
   }
   try {
-    const client = new MongoClient(MONGODB_URI);
+    const client = new MongoClient(MONGODB_URI, { serverSelectionTimeoutMS: 3000 });
     await client.connect();
     db = client.db();
-    console.log(`[${REGION_ID}] Connected to MongoDB`);
+    console.log(`[${REGION_ID}] Connected to MongoDB successfully.`);
   } catch (err: any) {
-    console.error(`[${REGION_ID}] DB Connect Error:`, err.message);
-    process.exit(1);
+    if (!dbLogged) {
+      console.log(`[${REGION_ID}] MongoDB pending connection. Node is running locally on port ${PORT}.`);
+      dbLogged = true;
+    }
+    setTimeout(connectDb, 15000);
   }
 }
 
@@ -132,6 +136,5 @@ setInterval(async () => {
   } catch (err) {}
 }, 10000); // GAP-001: spec mandates 10,000ms (10s) telemetry cadence
 
-connectDb().then(() => {
-  app.listen(PORT, () => console.log(`[${REGION_ID}] Listening on port ${PORT}`));
-});
+app.listen(PORT, () => console.log(`[${REGION_ID}] Listening on port ${PORT}`));
+connectDb();
