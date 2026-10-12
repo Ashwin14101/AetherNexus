@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { API_BASE as GATEWAY_URL } from '../config';
 
 const clusters = [
@@ -13,7 +13,7 @@ const cascadeScenarios = [
   { label: 'Rolling Degradation', scenario: 'rolling-degradation' },
 ];
 
-export default function DevOpsControls({ onMitigate, onReset }) {
+export default function DevOpsControls({ onMitigate, onReset, onSelectCluster }) {
   // Track active actions for visual feedback
   const [activeActions, setActiveActions] = useState({});
 
@@ -129,12 +129,17 @@ export default function DevOpsControls({ onMitigate, onReset }) {
             borderRight: cluster.id !== 'apSouthCluster' ? '1px solid rgba(255,255,255,0.1)' : 'none',
             paddingRight: cluster.id !== 'apSouthCluster' ? '20px' : '0'
           }}>
+            <button
+              onClick={() => onSelectCluster?.(cluster.id)}
+              style={{ background: 'transparent', border: 0, cursor: 'pointer', padding: 0 }}
+            >
             <h3 style={{
               color: '#00ff41', margin: '0 0 10px 0', fontFamily: 'monospace',
               fontSize: '13px', textShadow: '0 0 5px #00ff41', textAlign: 'center'
             }}>
               {cluster.label}
             </h3>
+            </button>
             <button
               onClick={() => handleInject(cluster.region, 'CPU_SPIKE')}
               style={getBtnStyle('#ff003c', `${cluster.region}-CPU_SPIKE`)}

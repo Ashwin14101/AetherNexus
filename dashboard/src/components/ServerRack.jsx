@@ -38,7 +38,7 @@ const STATUS_COLORS = {
   HEALING: { base: new THREE.Color('#ffd700'), dim: new THREE.Color('#332200') },
 };
 
-export default function ServerRack({ position, label, status, healingProgress, metrics }) {
+export default function ServerRack({ position, label, status, healingProgress, metrics, onSelect, selected }) {
   const ledMeshRef = useRef();
   const currentColors = STATUS_COLORS[status] || STATUS_COLORS.NOMINAL_GREEN;
 
@@ -84,7 +84,7 @@ export default function ServerRack({ position, label, status, healingProgress, m
   const statusLabel = metrics?.status ?? metrics?.clusterOperationalStatus ?? status;
 
   return (
-    <group position={position}>
+    <group position={position} onClick={(event) => { event.stopPropagation(); onSelect?.(); }}>
       {/* The Glass Display Case */}
       <mesh geometry={frameGeo}>
         <meshStandardMaterial color="#000000" transparent opacity={0.15} depthWrite={false} />
@@ -114,6 +114,8 @@ export default function ServerRack({ position, label, status, healingProgress, m
           whiteSpace: 'nowrap',
           textAlign: 'center',
           minWidth: '110px',
+          cursor: 'pointer',
+          opacity: selected ? 1 : 0.88,
         }}>
           <div style={{ fontSize: '13px' }}>{label}</div>
           {/* Live metric labels from metrics prop */}

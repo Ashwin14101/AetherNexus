@@ -49,6 +49,44 @@ export function mapToClusterId(r) {
     return r;
 }
 
+// ─── Deterministic cluster guard ──────────────────────────────────────────────
+// The LLM occasionally drifts back to a "US" default in its final egress packet,
+// which makes the dashboard logs print us-cluster text even when the operator
+// acted on the west/south cluster. These two helpers force the egress to name
+// the cluster that is ACTUALLY affected, so east/west/south always match.
+const CLUSTER_HUMAN_LABELS = {
+    usEastCluster: 'US-East',
+    euWestCluster: 'EU-West',
+    apSouthCluster: 'AP-South',
+};
+const CLUSTER_HUMAN_LABELS_1 = {
+    usEastCluster: 'US-East-1',
+    euWestCluster: 'EU-West-1',
+    apSouthCluster: 'AP-South-1',
+};
+function findAffectedCluster(snapshot) {
+    if (!snapshot) return null;
+    let degraded = null;
+    for (const [key, data] of Object.entries(snapshot)) {
+        const cpu = data?.computeLoadPercentage ?? data?.currentLoadPercentage ?? 0;
+        const st = data?.clusterOperationalStatus ?? data?.status ?? 'STABLE';
+        if (cpu >= 90 || st === 'CRITICAL' || st === 'CRITICAL_NETWORK_DOWN') return key;
+        if (cpu >= 70 || st === 'DEGRADED' || st === 'WARNING_AMBER') degraded = key;
+    }
+    return degraded;
+}
+function rewriteClusterText(text, wrongId, rightId) {
+    if (!text || !wrongId || !rightId || wrongId === rightId) return text;
+    const pairs = [
+        [CLUSTER_HUMAN_LABELS_1[wrongId], CLUSTER_HUMAN_LABELS_1[rightId]],
+        [CLUSTER_HUMAN_LABELS[wrongId], CLUSTER_HUMAN_LABELS[rightId]],
+        [wrongId, rightId],
+    ].filter(([a, b]) => a && b && a !== b);
+    let out = text;
+    for (const [a, b] of pairs) out = out.split(a).join(b);
+    return out;
+}
+
 // GAP-004 FIX: OpenRouter primary client — spec mandates openai/gpt-oss-120b:free as first engine.
 const resolvedOpenRouterApiKey = process.env["OPENROUTER_API_KEY"] ?? null;
 const openRouterClient = resolvedOpenRouterApiKey
@@ -919,6 +957,17 @@ ${liveEndpoints}
                         if (act.includes('euwest') || act.includes('eu-west') || act.includes('eu_west') || act.includes('europe')) resolvedTargetCluster = 'euWestCluster';
                         else if (act.includes('apsouth') || act.includes('ap-south') || act.includes('ap_south') || act.includes('asia')) resolvedTargetCluster = 'apSouthCluster';
                         else if (act.includes('useast') || act.includes('us-east') || act.includes('us_east')) resolvedTargetCluster = 'usEastCluster';
+                    }
+
+                    // DETERMINISTIC CLUSTER GUARD: the LLM can drift back to a "US"
+                    // default. Force the egress to name the cluster that is ACTUALLY
+                    // affected so east/west/south actions print their own cluster logs.
+                    const actuallyAffected = findAffectedCluster(currentTelemetrySnapshot);
+                    if (actuallyAffected && parsedLlmEgressDirective.incidentThreatLevelColor && parsedLlmEgressDirective.incidentThreatLevelColor !== 'NOMINAL_GREEN') {
+                        if (resolvedTargetCluster && resolvedTargetCluster !== actuallyAffected) {
+                            parsedLlmEgressDirective.executedMitigationAction = rewriteClusterText(parsedLlmEgressDirective.executedMitigationAction, resolvedTargetCluster, actuallyAffected);
+                        }
+                        resolvedTargetCluster = actuallyAffected;
                     }
 
                     const architecturalThoughtStreamPacket = {

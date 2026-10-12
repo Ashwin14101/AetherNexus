@@ -147,6 +147,7 @@ function DataFlowSystem({ apiGatewayPos, racks, statuses, trafficWeights }) {
 export default function App() {
   const [currentView, setCurrentView] = useState('topology');
   const [logs, setLogs] = useState([]);
+  const [selectedCluster, setSelectedCluster] = useState(null);
   const [trafficWeights, setTrafficWeights] = useState({ usEastCluster: 33.3, euWestCluster: 33.3, apSouthCluster: 33.4 });
   const [statuses, setStatuses] = useState({
     usEastCluster: 'NOMINAL_GREEN',
@@ -186,6 +187,22 @@ export default function App() {
     { id: 'euWestCluster', position: [0, -1.2, 0], label: 'EU-WEST' },
     { id: 'apSouthCluster', position: [6, -1.2, 0], label: 'AP-SOUTH' }
   ], []);
+
+  // Keep the telemetry panel scoped to the rack the operator selected. Older
+  // events may only contain a region/action string, so normalize all aliases
+  // before deciding whether an event belongs to the selected cluster.
+  const logClusterId = useCallback((log) => {
+    if (!log || typeof log === 'string') return null;
+    const direct = log.targetClusterRegion || log.clusterId || log.region;
+    const mapped = toClusterId(direct);
+    if (mapped !== direct || mapped === 'usEastCluster' || mapped === 'euWestCluster' || mapped === 'apSouthCluster') return mapped;
+    const text = `${log.executedMitigationAction || ''} ${log.text || ''}`;
+    return toClusterId(text);
+  }, []);
+  const visibleLogs = useMemo(() => {
+    if (!selectedCluster) return logs;
+    return logs.filter(log => logClusterId(log) === selectedCluster);
+  }, [logs, selectedCluster, logClusterId]);
 
   // Helper: add a log entry with deduplication (time-windowed, not just adjacent)
   const addLog = useCallback((logEntry) => {
@@ -452,7 +469,7 @@ export default function App() {
   return (
     <div style={{ width: '100vw', height: '100vh', background: '#0a0a0a', overflow: 'hidden', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       {currentView === 'diagnostics' ? (
-        <Diagnostics onReturn={() => setCurrentView('topology')} logs={logs} statuses={statuses} trafficWeights={trafficWeights} />
+         <Diagnostics onReturn={() => setCurrentView('topology')} logs={visibleLogs} statuses={statuses} trafficWeights={trafficWeights} />
       ) : (
         <div className="fit-stage" style={{ transform: `scale(${fitScale})` }}>
           <div className="fit-canvas">
@@ -463,13 +480,15 @@ export default function App() {
             <ApiGateway position={apiGatewayPos} />
 
             {racks.map(rack => (
-              <ServerRack
+                <ServerRack
                 key={rack.id}
                 position={rack.position}
                 label={rack.label}
                 status={statuses[rack.id]}
                 healingProgress={healingProgresses[rack.id]}
-                metrics={liveMetrics[rack.id]}
+                  metrics={liveMetrics[rack.id]}
+                  selected={selectedCluster === rack.id}
+                  onSelect={() => setSelectedCluster(rack.id)}
               />
             ))}
 
@@ -499,10 +518,12 @@ export default function App() {
             display: 'flex',
             flexDirection: 'column'
           }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, borderBottom: '1px solid rgba(0, 229, 255, 0.3)', paddingBottom: 12, marginBottom: 12 }}>
+             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, borderBottom: '1px solid rgba(0, 229, 255, 0.3)', paddingBottom: 12, marginBottom: 12 }}>
               <div style={{ minWidth: 0 }}>
                 <h3 style={{ margin: 0, letterSpacing: '2px', fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>TELEMETRY LOGS</h3>
-                <div style={{ fontSize: 10, color: '#00e5ff', opacity: 0.7, marginTop: 3 }}>Session: Admin</div>
+                 <div style={{ fontSize: 10, color: '#00e5ff', opacity: 0.7, marginTop: 3 }}>
+                   {selectedCluster ? `${racks.find(r => r.id === selectedCluster)?.label} · ` : ''}Session: Admin
+                 </div>
               </div>
               <button
                 onClick={handleClearLogs}
@@ -535,7 +556,7 @@ export default function App() {
             )}
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', flexGrow: 1, overflowY: 'auto' }}>
-              {logs.map((log, i) => {
+               {visibleLogs.map((log, i) => {
                 const AI_LEVEL_COLORS = { info: '#00e5ff', warning: '#ffaa00', critical: '#ff3333', success: '#00ff41' };
                 const isAiLog = log?.text !== undefined && log?.level !== undefined;
                 const isString = typeof log === 'string';
@@ -580,13 +601,15 @@ export default function App() {
                   </div>
                 );
               })}
-              {logs.length === 0 && (
-                <div style={{ color: '#666', fontStyle: 'italic', marginTop: '20px', textAlign: 'center' }}>Awaiting telemetry streams...</div>
+               {visibleLogs.length === 0 && (
+                <div style={{ color: '#666', fontStyle: 'italic', marginTop: '20px', textAlign: 'center' }}>
+                  {selectedCluster ? 'No telemetry for this cluster yet.' : 'Awaiting telemetry streams...'}
+                </div>
               )}
             </div>
 
             <button
-              onClick={() => setCurrentView('diagnostics')}
+               onClick={() => setCurrentView('diagnostics')}
               style={{
                 marginTop: '20px',
                 width: '100%',
@@ -617,7 +640,7 @@ export default function App() {
               [ EXPORT LOGS ]
             </button>
           </div>
-          <DevOpsControls onMitigate={handleManualMitigate} onReset={handleResetAll} />
+          <DevOpsControls onMitigate={handleManualMitigate} onReset={handleResetAll} onSelectCluster={setSelectedCluster} />
           {/* Live connection badge */}
           <div className="connection-status">
             <span className={`dot ${wsConnected ? 'connected' : ''}`} />
