@@ -1,4 +1,4 @@
-/* AetherNexus dashboard styles (Vite template leftovers removed) */
+/* AetherNexus dashboard styles */
 
 /* Pulse animation for paused log indicator */
 @keyframes pulse {
@@ -6,31 +6,18 @@
   50% { opacity: 0.5; }
 }
 
-/* ── Responsive layout ─────────────────────────────────────────────────────
-   Desktop: 3D canvas full-screen, telemetry sidebar right (320px),
-   DevOps controls bottom-center with room to spare.
-   Mobile:  sidebar becomes a bottom sheet, controls stack above it. */
-@media (max-width: 900px) {
-  .telemetry-sidebar {
-    top: auto !important;
-    bottom: 12px !important;
-    left: 12px !important;
-    right: 12px !important;
-    width: auto !important;
-    height: 42vh !important;
-  }
+/* ── Auto-fit stage ──────────────────────────────────────────────────────────
+   The topology view is composed at a fixed 1280x720 design size and CSS-scaled
+   to fit whatever window size the browser has — identical layout everywhere. */
+.fit-stage {
+  position: relative;
+  width: 1280px;
+  height: 720px;
+  flex: none;
+  transform-origin: center center;
+}
 
-  .devops-controls {
-    top: 12px !important;
-    bottom: auto !important;
-    max-width: calc(100vw - 24px) !important;
-    max-height: 45vh;
-    overflow-y: auto;
-    padding: 12px !important;
-    gap: 8px !important;
-  }
-
-  .connection-status {
-    display: none !important; /* space is tight; sidebar shows live data instead */
-  }
+.fit-canvas {
+  position: absolute;
+  inset: 0;
 }

@@ -159,6 +159,14 @@ export default function App() {
   const [isSystemPaused, setIsSystemPaused] = useState(false);
   // Live WebSocket connection state for the status badge
   const [wsConnected, setWsConnected] = useState(false);
+  // Auto-fit: topology view is a fixed 1280x720 design stage, scaled to any window
+  const [fitScale, setFitScale] = useState(1);
+  useEffect(() => {
+    const calc = () => setFitScale(Math.min(window.innerWidth / 1280, window.innerHeight / 720));
+    calc();
+    window.addEventListener('resize', calc);
+    return () => window.removeEventListener('resize', calc);
+  }, []);
 
   const mitigationIntervals = useRef({});
   // Dedupe: track last log message to prevent duplicates
@@ -442,11 +450,12 @@ export default function App() {
   }, []);
 
   return (
-    <div style={{ width: '100vw', height: '100vh', background: '#0a0a0a', overflow: 'hidden', position: 'relative' }}>
+    <div style={{ width: '100vw', height: '100vh', background: '#0a0a0a', overflow: 'hidden', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       {currentView === 'diagnostics' ? (
         <Diagnostics onReturn={() => setCurrentView('topology')} logs={logs} statuses={statuses} trafficWeights={trafficWeights} />
       ) : (
-        <>
+        <div className="fit-stage" style={{ transform: `scale(${fitScale})` }}>
+          <div className="fit-canvas">
           <Canvas camera={{ position: [0, 3.4, 16], fov: 50 }}>
             <ambientLight intensity={0.5} />
             <pointLight position={[0, 10, 0]} intensity={1.5} color="#ffffff" />
@@ -468,6 +477,7 @@ export default function App() {
 
             <OrbitControls enablePan={true} maxPolarAngle={Math.PI / 2} minPolarAngle={Math.PI / 6} />
           </Canvas>
+          </div>
 
           {/* Glassmorphism Sidebar */}
           <div className="telemetry-sidebar" style={{
@@ -607,16 +617,12 @@ export default function App() {
               [ EXPORT LOGS ]
             </button>
           </div>
-        </>
-      )}
-      {currentView !== 'diagnostics' && (
-        <DevOpsControls onMitigate={handleManualMitigate} onReset={handleResetAll} />
-      )}
-      {/* Live connection badge (topology view only) */}
-      {currentView !== 'diagnostics' && (
-        <div className="connection-status">
-          <span className={`dot ${wsConnected ? 'connected' : ''}`} />
-          {wsConnected ? 'CONTROL LINK ONLINE' : 'RECONNECTING…'}
+          <DevOpsControls onMitigate={handleManualMitigate} onReset={handleResetAll} />
+          {/* Live connection badge */}
+          <div className="connection-status">
+            <span className={`dot ${wsConnected ? 'connected' : ''}`} />
+            {wsConnected ? 'CONTROL LINK ONLINE' : 'RECONNECTING…'}
+          </div>
         </div>
       )}
     </div>
