@@ -6,9 +6,8 @@ import { io } from 'socket.io-client';
 import ServerRack from './components/ServerRack';
 import Diagnostics from './components/Diagnostics';
 import DevOpsControls from './components/DevOpsControls';
+import { API_BASE as GATEWAY_URL } from './config';
 import './App.css';
-
-const GATEWAY_URL = import.meta.env.VITE_API_GATEWAY_URL || (import.meta.env.PROD ? '' : 'http://localhost:4000');
 
 const packetGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
 const packetMat = new THREE.MeshBasicMaterial({ color: '#ffffff' });
@@ -158,6 +157,8 @@ export default function App() {
   const [liveMetrics, setLiveMetrics] = useState({});
   // PWR-03: Track system paused state from AI broadcasts
   const [isSystemPaused, setIsSystemPaused] = useState(false);
+  // Live WebSocket connection state for the status badge
+  const [wsConnected, setWsConnected] = useState(false);
 
   const mitigationIntervals = useRef({});
   // Dedupe: track last log message to prevent duplicates
@@ -211,6 +212,8 @@ export default function App() {
         }).catch(err => console.error('Reconnect fetch failed', err));
     };
     socket.on('connect', onConnect);
+    socket.on('connect', () => setWsConnected(true));
+    socket.on('disconnect', () => setWsConnected(false));
 
     socket.on('aethernexus-telemetry-broadcast', (data) => {
       addLog(data);
@@ -327,6 +330,8 @@ export default function App() {
 
     return () => {
       socket.off('connect', onConnect);
+      socket.off('connect');
+      socket.off('disconnect');
       socket.off('aethernexus-telemetry-broadcast');
       socket.off('live-metrics-stream');
       socket.off('ai-log');
@@ -450,7 +455,7 @@ export default function App() {
           </Canvas>
 
           {/* Glassmorphism Sidebar */}
-          <div style={{
+          <div className="telemetry-sidebar" style={{
             position: 'absolute',
             top: 20,
             right: 20,
@@ -590,6 +595,13 @@ export default function App() {
       )}
       {currentView !== 'diagnostics' && (
         <DevOpsControls onMitigate={handleManualMitigate} onReset={handleResetAll} />
+      )}
+      {/* Live connection badge (topology view only) */}
+      {currentView !== 'diagnostics' && (
+        <div className="connection-status">
+          <span className={`dot ${wsConnected ? 'connected' : ''}`} />
+          {wsConnected ? 'CONTROL LINK ONLINE' : 'RECONNECTING…'}
+        </div>
       )}
     </div>
   );

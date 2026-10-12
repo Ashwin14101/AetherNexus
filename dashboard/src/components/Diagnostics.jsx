@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar, Legend } from 'recharts';
 import { Activity, ShieldAlert, Clock, ArrowLeft, Cpu, Sun, Moon, Download } from 'lucide-react';
+import { API_BASE } from '../config';
 
 const COLORS = ['#00e5ff', '#ffaa00', '#00ff41'];
 const THREAT_COLORS = { nominal: '#00ff41', warning: '#ffaa00', critical: '#ff3333' };
@@ -12,6 +13,10 @@ export default function Diagnostics({ onReturn, logs, statuses, trafficWeights }
   const [isDark, setIsDark] = useState(true);
   // PWR-09: SLA data
   const [slaData, setSlaData] = useState(null);
+  // Real incident history from /api/incidents (replaces hardcoded fallback)
+  const [incidents, setIncidents] = useState([]);
+  // Real AI reasoning logs from /api/ai/logs
+  const [aiLogs, setAiLogs] = useState([]);
   const theme = {
     bg: isDark ? '#0a0a0a' : '#f4f6fa',
     card: isDark ? 'rgba(20, 20, 25, 0.65)' : 'rgba(255,255,255,0.85)',
@@ -23,7 +28,7 @@ export default function Diagnostics({ onReturn, logs, statuses, trafficWeights }
 
   useEffect(() => {
     const fetchTelemetry = () => {
-      fetch(`${import.meta.env.VITE_API_GATEWAY_URL || 'http://localhost:4000'}/api/infrastructure/telemetry`)
+      fetch(`${API_BASE}/api/infrastructure/telemetry`)
         .then(res => res.json())
         .then(data => {
           setTelemetry(data);
@@ -36,15 +41,31 @@ export default function Diagnostics({ onReturn, logs, statuses, trafficWeights }
     };
 
     const fetchSla = () => {
-      fetch(`${import.meta.env.VITE_API_GATEWAY_URL || 'http://localhost:4000'}/api/sla`)
+      fetch(`${API_BASE}/api/sla`)
         .then(res => res.json())
         .then(data => setSlaData(data.sla))
         .catch(() => {});
     };
 
+    const fetchIncidents = () => {
+      fetch(`${API_BASE}/api/incidents?limit=200`)
+        .then(res => res.json())
+        .then(data => setIncidents(Array.isArray(data.incidents) ? data.incidents : []))
+        .catch(() => {});
+    };
+
+    const fetchAiLogs = () => {
+      fetch(`${API_BASE}/api/ai/logs?limit=50`)
+        .then(res => res.json())
+        .then(data => setAiLogs(Array.isArray(data.logs) ? data.logs : []))
+        .catch(() => {});
+    };
+
     fetchTelemetry();
     fetchSla();
-    const interval = setInterval(() => { fetchTelemetry(); fetchSla(); }, 5000);
+    fetchIncidents();
+    fetchAiLogs();
+    const interval = setInterval(() => { fetchTelemetry(); fetchSla(); fetchIncidents(); fetchAiLogs(); }, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -87,23 +108,27 @@ export default function Diagnostics({ onReturn, logs, statuses, trafficWeights }
     ];
   }
 
-  // Fallback to realistic demo data if no historical points yet recorded
-  if (!loadData || loadData.length === 0) {
-    loadData = [
-      { time: '11:50:00', usEast: 25, euWest: 28, apSouth: 22 },
-      { time: '11:53:00', usEast: 24, euWest: 30, apSouth: 23 },
-      { time: '11:56:00', usEast: 26, euWest: 95, apSouth: 22 },
-      { time: '11:59:00', usEast: 50, euWest: 48, apSouth: 50 },
-      { time: '12:02:00', usEast: 25, euWest: 25, apSouth: 22 },
-    ];
-  }
-
-  if (!incidentData || incidentData.every(d => d.nominal === 0 && d.warning === 0 && d.critical === 0)) {
-    incidentData = [
-      { region: 'US-East', nominal: 18, warning: 1, critical: 0 },
-      { region: 'EU-West', nominal: 14, warning: 2, critical: 1 },
-      { region: 'AP-South', nominal: 19, warning: 0, critical: 0 }
-    ];
+  // PWR-01: Build the incident chart from the REAL incident_log (no fake data).
+  // Falls back to the historical status-sample counts when no incidents yet.
+  const hasRealIncidents = incidents.length > 0;
+  if (hasRealIncidents) {
+    const counts = {
+      'US-East': { region: 'US-East', nominal: 0, warning: 0, critical: 0 },
+      'EU-West': { region: 'EU-West', nominal: 0, warning: 0, critical: 0 },
+      'AP-South': { region: 'AP-South', nominal: 0, warning: 0, critical: 0 },
+    };
+    for (const inc of incidents) {
+      const region = inc.region || '';
+      let bucket = null;
+      if (region.includes('East')) bucket = counts['US-East'];
+      else if (region.includes('West')) bucket = counts['EU-West'];
+      else if (region.includes('South')) bucket = counts['AP-South'];
+      if (!bucket) continue;
+      if (inc.severity === 'CRITICAL_RED') bucket.critical++;
+      else if (inc.severity === 'WARNING_AMBER') bucket.warning++;
+      else bucket.nominal++;
+    }
+    incidentData = Object.values(counts);
   }
 
   if (trafficWeights) {
@@ -125,6 +150,21 @@ export default function Diagnostics({ onReturn, logs, statuses, trafficWeights }
   const currentThreatColor = latestLog?.incidentThreatLevelColor || 'NOMINAL_GREEN';
   const threatDisplay = currentThreatColor.split('_')[0];
   const trafficKey = trafficWeights ? JSON.stringify(trafficWeights) : 'default';
+
+  // PWR-09: Real global uptime = average of per-cluster 24h SLA (from /api/sla).
+  // Derived from actual outage events, not a hardcoded constant.
+  const globalUptime = slaData
+    ? (() => {
+        const values = ['usEastCluster', 'euWestCluster', 'apSouthCluster']
+          .map((c) => slaData[c]?.['24h'])
+          .filter((v) => typeof v === 'number');
+        if (values.length === 0) return null;
+        return values.reduce((a, b) => a + b, 0) / values.length;
+      })()
+    : null;
+
+  // Latest persisted AI reasoning entry (from /api/ai/logs)
+  const latestAiReasoning = aiLogs.length > 0 ? aiLogs[0] : null;
 
   return (
     <div style={{
@@ -199,7 +239,9 @@ export default function Diagnostics({ onReturn, logs, statuses, trafficWeights }
               </li>
               <li style={{ borderLeft: `3px solid ${currentThreatColor === 'CRITICAL_RED' ? '#ff3333' : (currentThreatColor === 'WARNING_AMBER' ? '#ffaa00' : '#00ff41')}`, paddingLeft: '15px' }}>
                 <strong style={{ color: currentThreatColor === 'CRITICAL_RED' ? '#ff3333' : (currentThreatColor === 'WARNING_AMBER' ? '#ffaa00' : '#00ff41') }}>[ PREDICTIVE THREAT ANALYSIS ]</strong><br />
-                {logs?.slice().reverse().find(l => typeof l === 'string' && l.startsWith('[AI')) || "Traffic flows suggest standard operational drift. AI prediction model confidence: 94.2%. No immediate manual overrides requested by the Control Plane."}
+                {latestAiReasoning
+                  ? <span style={{ whiteSpace: 'pre-wrap' }}>[{latestAiReasoning.level?.toUpperCase() || 'INFO'}] {latestAiReasoning.text}</span>
+                  : 'No AI orchestrator entries recorded yet. Anomalies detected here will surface real reasoning logs.'}
               </li>
             </ul>
           </div>
@@ -213,8 +255,13 @@ export default function Diagnostics({ onReturn, logs, statuses, trafficWeights }
             <Clock size={32} color="#00ff41" />
           </div>
           <div>
-            <div style={{ color: '#888', fontSize: '14px', marginBottom: '5px' }}>Global Uptime</div>
-            <div style={{ fontSize: '28px', color: '#00ff41', fontWeight: 'bold', textShadow: '0 0 10px rgba(0, 255, 65, 0.3)' }}>99.999%</div>
+            <div style={{ color: '#888', fontSize: '14px', marginBottom: '5px' }}>Global Uptime (24h)</div>
+            <div style={{ fontSize: '28px', color: '#00ff41', fontWeight: 'bold', textShadow: '0 0 10px rgba(0, 255, 65, 0.3)' }}>
+              {globalUptime !== null ? `${globalUptime.toFixed(3)}%` : '—'}
+            </div>
+            <div style={{ color: '#666', fontSize: '11px', marginTop: '4px' }}>
+              {globalUptime !== null ? 'measured from outage events' : 'awaiting SLA data'}
+            </div>
           </div>
         </div>
 
@@ -244,6 +291,11 @@ export default function Diagnostics({ onReturn, logs, statuses, trafficWeights }
         <div style={{ background: 'rgba(20, 20, 25, 0.65)', backdropFilter: 'blur(12px)', border: '1px solid rgba(0, 229, 255, 0.2)', borderRadius: '8px', padding: '20px' }}>
           <h3 style={{ color: '#00e5ff', marginTop: 0, marginBottom: '20px', fontWeight: 'normal', letterSpacing: '1px' }}>Cluster Load Over Time (%)</h3>
           <div style={{ height: '300px' }}>
+            {loadData.length === 0 ? (
+              <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666', fontStyle: 'italic', border: '1px dashed rgba(0,229,255,0.2)', borderRadius: '6px' }}>
+                Awaiting telemetry samples — charts populate as the control plane streams data…
+              </div>
+            ) : (
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={loadData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
                 <defs>
@@ -273,6 +325,7 @@ export default function Diagnostics({ onReturn, logs, statuses, trafficWeights }
                 <Area type="monotone" dataKey="apSouth" stroke={COLORS[2]} fillOpacity={1} fill="url(#colorAp)" />
               </AreaChart>
             </ResponsiveContainer>
+            )}
           </div>
         </div>
 
@@ -305,8 +358,13 @@ export default function Diagnostics({ onReturn, logs, statuses, trafficWeights }
 
       {/* Incident History Bar Chart */}
       <div style={{ background: 'rgba(20, 20, 25, 0.65)', backdropFilter: 'blur(12px)', border: '1px solid rgba(0, 229, 255, 0.2)', borderRadius: '8px', padding: '20px' }}>
-        <h3 style={{ color: '#00e5ff', marginTop: 0, marginBottom: '20px', fontWeight: 'normal', letterSpacing: '1px' }}>Incidents by Region</h3>
+        <h3 style={{ color: '#00e5ff', marginTop: 0, marginBottom: '20px', fontWeight: 'normal', letterSpacing: '1px' }}>Incidents by Region {hasRealIncidents ? '(recorded)' : '(no incidents recorded)'}</h3>
         <div style={{ height: '250px' }}>
+          {!hasRealIncidents && incidentData.every(d => d.nominal === 0 && d.warning === 0 && d.critical === 0) ? (
+            <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666', fontStyle: 'italic', border: '1px dashed rgba(0,229,255,0.2)', borderRadius: '6px' }}>
+              No incidents yet — inject a chaos fault to populate this chart with real data.
+            </div>
+          ) : (
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={incidentData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(0, 229, 255, 0.1)" vertical={false} />
@@ -323,6 +381,7 @@ export default function Diagnostics({ onReturn, logs, statuses, trafficWeights }
               <Bar dataKey="critical" stackId="a" fill={THREAT_COLORS.critical} />
             </BarChart>
           </ResponsiveContainer>
+          )}
         </div>
       </div>
 

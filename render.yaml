@@ -30,7 +30,7 @@ services:
       - key: AETHERNEXUS_GATEWAY_URL
         sync: false   # Set to this service's own Render URL (e.g. https://aethernexus-gateway.onrender.com)
       - key: VITE_API_GATEWAY_URL
-        sync: false   # Same as AETHERNEXUS_GATEWAY_URL — consumed by Vite build
+        sync: false   # Optional: leave unset — dashboard defaults to same-origin in prod
       - key: ALLOWED_ORIGINS
         sync: false   # Comma-separated allowed CORS origins for production
       - key: CHAOS_API_TOKEN

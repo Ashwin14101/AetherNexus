@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
-
-const GATEWAY_URL = import.meta.env.VITE_API_GATEWAY_URL || 'http://localhost:4000';
+import { API_BASE as GATEWAY_URL } from '../config';
 
 const clusters = [
   { id: 'usEastCluster', label: 'US-East', region: 'US-East-1' },
@@ -103,7 +102,7 @@ export default function DevOpsControls({ onMitigate, onReset }) {
   };
 
   return (
-    <div style={{
+    <div className="devops-controls" style={{
       position: 'absolute',
       bottom: '20px',
       left: '50%',
