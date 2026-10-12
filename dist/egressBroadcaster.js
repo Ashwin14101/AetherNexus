@@ -49,8 +49,22 @@ export function setSharedSocket(ioInstance) {
     aetherNexusSocketIoEgressServer = ioInstance;
 }
 // ─── Egress Broadcast Function ─────────────────────────────────────────────────
+// Suppress identical nominal heartbeat broadcasts so the live feed only
+// re-shows a repeated state after HEARTBEAT_REPEAT_MS (kills 30s spam).
+const HEARTBEAT_REPEAT_MS = 5 * 60 * 1000;
+const lastBroadcastBySignature = new Map();
 export function emitArchitecturalThoughtStreamPacket(architecturalThoughtStreamPacket) {
     try {
+        const signature = `${architecturalThoughtStreamPacket.incidentThreatLevelColor}|${architecturalThoughtStreamPacket.targetClusterRegion || ''}|${architecturalThoughtStreamPacket.executedMitigationAction || ''}`;
+        const isNominalHeartbeat = architecturalThoughtStreamPacket.incidentThreatLevelColor === 'NOMINAL_GREEN'
+            && !architecturalThoughtStreamPacket.targetClusterRegion;
+        if (isNominalHeartbeat) {
+            const lastSeen = lastBroadcastBySignature.get(signature) || 0;
+            if (Date.now() - lastSeen < HEARTBEAT_REPEAT_MS) {
+                return; // identical nominal heartbeat — suppress
+            }
+            lastBroadcastBySignature.set(signature, Date.now());
+        }
         if (aetherNexusSocketIoEgressServer) {
             aetherNexusSocketIoEgressServer.emit("aethernexus-telemetry-broadcast", architecturalThoughtStreamPacket);
             console.error(`[SOCKET_BROADCAST_EMITTED] Event: aethernexus-telemetry-broadcast | ThreatLevel: ${architecturalThoughtStreamPacket.incidentThreatLevelColor} | Action: ${architecturalThoughtStreamPacket.executedMitigationAction}`);

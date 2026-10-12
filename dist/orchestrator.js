@@ -65,6 +65,8 @@ const openRouterClient = resolvedOpenRouterApiKey
 if (!resolvedOpenRouterApiKey) {
     console.error("[ORCHESTRATOR_ENV_WARN] OPENROUTER_API_KEY not found — OpenRouter primary engine disabled. Falling back to Groq key pool only.");
 }
+let openRouterAuthFailureLogged = false;
+let simulationModeNoticedLogged = false;
 
 const groqKeyPool = [
     process.env["OPENAI_API_KEY"],
@@ -612,6 +614,15 @@ async function executeAgenticReasoningCycle(activeConversationThread, cycleId) {
         catch (openRouterException) {
             // GAP-005 FIX: Rotate on 429 AND 5xx — fall through to Groq pool.
             const openRouterStatus = openRouterException?.status ?? 0;
+            if ((openRouterStatus === 401 || openRouterStatus === 403) && !openRouterAuthFailureLogged) {
+                openRouterAuthFailureLogged = true;
+                writeAiLog({
+                    text: `[AI] OpenRouter rejected OPENROUTER_API_KEY (HTTP ${openRouterStatus} ${openRouterException?.error?.message || ''}). Replace the key in .env to enable LLM reasoning — continuing with deterministic SOP evaluation.`,
+                    level: 'critical',
+                    timestamp: new Date().toISOString(),
+                    architect: 'AetherNexus-Core'
+                });
+            }
             const shouldFallback = openRouterStatus === 429 ||
                 (openRouterStatus >= 500 && openRouterStatus < 600) ||
                 openRouterException?.code === "rate_limit_exceeded";
@@ -630,6 +641,15 @@ async function executeAgenticReasoningCycle(activeConversationThread, cycleId) {
     // Phase 2: Groq key pool fallback (also primary when OpenRouter is not configured).
     if (!aetherNexusLlmClient) {
         console.log("[ORCHESTRATOR_SIMULATION] Evaluating telemetry using internal SOP rules (Simulation Mode)...");
+        if (!simulationModeNoticedLogged) {
+            simulationModeNoticedLogged = true;
+            writeAiLog({
+                text: '[AI] No valid LLM key available — running deterministic SOP evaluation. Real reasoning logs will appear once a valid API key is set.',
+                level: 'warning',
+                timestamp: new Date().toISOString(),
+                architect: 'AetherNexus-Core'
+            });
+        }
         try {
             const userMsg = mutatingConversationThread.find(m => m.role === "user");
             let state = {};
@@ -823,7 +843,6 @@ export async function executeEvaluationCycle(forced = false) {
     if (isEvaluating && !forced) return;
     isEvaluating = true;
     console.error(`[ORCHESTRATOR_CYCLE_START] Timestamp: ${new Date().toISOString()}`);
-    writeAiLog({ text: '[AI] Evaluation cycle started — ingesting live telemetry snapshot.', level: 'info', timestamp: new Date().toISOString(), architect: 'AetherNexus-Core' });
     try {
         const currentTelemetrySnapshot = await simulateDomain1TelemetryIngress();
         console.error('[DIAGNOSTIC - RAW DB DATA]:', JSON.stringify(currentTelemetrySnapshot, null, 2));

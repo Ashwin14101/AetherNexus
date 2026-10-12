@@ -30,8 +30,8 @@ function ApiGateway({ position }) {
       <mesh geometry={wireframeGeo}>
         <meshBasicMaterial color="#00e5ff" wireframe transparent opacity={0.5} />
       </mesh>
-      <Html center position={[0, 1, 0]}>
-        <div style={{ color: '#00e5ff', fontFamily: 'monospace', textShadow: `0 0 5px #00e5ff`, fontWeight: 'bold' }}>
+      <Html center position={[0, 1.2, 0]}>
+        <div style={{ color: '#00e5ff', fontFamily: 'monospace', textShadow: `0 0 5px #00e5ff`, fontWeight: 'bold', whiteSpace: 'nowrap', fontSize: '15px' }}>
           API GATEWAY
         </div>
       </Html>
@@ -163,6 +163,8 @@ export default function App() {
   const mitigationIntervals = useRef({});
   // Dedupe: track last log message to prevent duplicates
   const lastLogRef = useRef('');
+  // Dedupe: last-seen timestamp per message key (drops heartbeat spam)
+  const logTimesRef = useRef(new Map());
 
   useEffect(() => {
     return () => {
@@ -170,20 +172,25 @@ export default function App() {
     };
   }, []);
 
-  const apiGatewayPos = useMemo(() => [0, 6, 0], []);
+  const apiGatewayPos = useMemo(() => [0, 4.6, 0], []);
   const racks = useMemo(() => [
-    { id: 'usEastCluster', position: [-6, -2, 0], label: 'US-EAST' },
-    { id: 'euWestCluster', position: [0, -2, 0], label: 'EU-WEST' },
-    { id: 'apSouthCluster', position: [6, -2, 0], label: 'AP-SOUTH' }
+    { id: 'usEastCluster', position: [-6, -1.2, 0], label: 'US-EAST' },
+    { id: 'euWestCluster', position: [0, -1.2, 0], label: 'EU-WEST' },
+    { id: 'apSouthCluster', position: [6, -1.2, 0], label: 'AP-SOUTH' }
   ], []);
 
-  // Helper: add a log entry with deduplication
+  // Helper: add a log entry with deduplication (time-windowed, not just adjacent)
   const addLog = useCallback((logEntry) => {
     const logKey = typeof logEntry === 'string'
       ? logEntry
       : (logEntry?.executedMitigationAction || logEntry?.text || JSON.stringify(logEntry));
     // Suppress exact duplicates in a row
     if (logKey === lastLogRef.current) return;
+    // Suppress the same message re-appearing within 60s (heartbeat spam)
+    const now = Date.now();
+    const lastSeen = logTimesRef.current.get(logKey) || 0;
+    if (now - lastSeen < 60000) return;
+    logTimesRef.current.set(logKey, now);
     lastLogRef.current = logKey;
     setLogs(prev => [logEntry, ...prev].slice(0, 50));
   }, []);
@@ -273,10 +280,18 @@ export default function App() {
       setLiveMetrics(normalizedMetrics);
     });
 
-    // AI Orchestrator real-time insight stream
+    // AI Orchestrator real-time insight stream (structured: timestamp + level + text)
     socket.on('ai-log', (data) => {
-      const formattedLog = `[AI - ${data.level ? data.level.toUpperCase() : 'INFO'}] ${data.text}`;
-      addLog(formattedLog);
+      if (!data || !data.text) return;
+      // Strip the legacy '[AI] ' literal prefix so it isn't rendered twice
+      const cleanText = String(data.text).replace(/^\[AI\]\s*/, '');
+      addLog({
+        kind: 'ai',
+        timestamp: data.timestamp || new Date().toISOString(),
+        level: data.level || 'info',
+        architect: data.architect || 'AetherNexus-Core',
+        text: cleanText,
+      });
     });
 
     // GAP-011 FIX: handle three canonical WebSocket event types from spec
@@ -432,7 +447,7 @@ export default function App() {
         <Diagnostics onReturn={() => setCurrentView('topology')} logs={logs} statuses={statuses} trafficWeights={trafficWeights} />
       ) : (
         <>
-          <Canvas camera={{ position: [0, 4, 15], fov: 50 }}>
+          <Canvas camera={{ position: [0, 3.4, 16], fov: 50 }}>
             <ambientLight intensity={0.5} />
             <pointLight position={[0, 10, 0]} intensity={1.5} color="#ffffff" />
 
@@ -474,11 +489,11 @@ export default function App() {
             display: 'flex',
             flexDirection: 'column'
           }}>
-            <div style={{ position: 'absolute', top: 15, right: 15, fontSize: 11, color: '#00e5ff', opacity: 0.8 }}>
-              Session: Admin
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid rgba(0, 229, 255, 0.3)', paddingBottom: 12, marginBottom: 12 }}>
-              <h3 style={{ margin: 0, letterSpacing: '2px', fontSize: '14px' }}>TELEMETRY LOGS</h3>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, borderBottom: '1px solid rgba(0, 229, 255, 0.3)', paddingBottom: 12, marginBottom: 12 }}>
+              <div style={{ minWidth: 0 }}>
+                <h3 style={{ margin: 0, letterSpacing: '2px', fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>TELEMETRY LOGS</h3>
+                <div style={{ fontSize: 10, color: '#00e5ff', opacity: 0.7, marginTop: 3 }}>Session: Admin</div>
+              </div>
               <button
                 onClick={handleClearLogs}
                 style={{
@@ -491,7 +506,8 @@ export default function App() {
                   borderRadius: '4px',
                   fontSize: '11px',
                   letterSpacing: '1px',
-                  transition: 'all 0.3s ease'
+                  transition: 'all 0.3s ease',
+                  flexShrink: 0
                 }}
               >
                 ✕ CLEAR
